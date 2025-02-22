@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from 'express'
+import validator from 'validator'
 import { FilterQuery, Error as MongooseError, Types } from 'mongoose'
 import BadRequestError from '../errors/bad-request-error'
 import NotFoundError from '../errors/not-found-error'
@@ -29,15 +30,27 @@ export const getOrders = async (
         } = req.query
 
         const filters: FilterQuery<Partial<IOrder>> = {}
+        const acceptableLimit = Math.min(Number(limit), 10).toString()
+        const acceptablePage = Math.max(Number(page), 1)
 
-        if (status) {
-            if (typeof status === 'object') {
-                Object.assign(filters, status)
-            }
-            if (typeof status === 'string') {
-                filters.status = status
-            }
-        }
+        
+
+         if (status) {
+             if (
+                 typeof status === 'string' &&
+                 /^[0-9a-zA-Z_-]+$/.test(status)
+             ) {
+                 filters.status = status
+             } else {
+                 throw new BadRequestError('Некорректный параметр статуса')
+             }
+         }
+
+         if (search) {
+             if (/[^\w\s]/.test(search as string)) {
+                 throw new BadRequestError('Некорректный поисковый запрос')
+             }
+         }
 
         if (totalAmountFrom) {
             filters.totalAmount = {
@@ -116,8 +129,8 @@ export const getOrders = async (
 
         aggregatePipeline.push(
             { $sort: sort },
-            { $skip: (Number(page) - 1) * Number(limit) },
-            { $limit: Number(limit) },
+            { $skip: (Number(acceptablePage) - 1) * Number(acceptableLimit) },
+            { $limit: Number(acceptableLimit) },
             {
                 $group: {
                     _id: '$_id',
@@ -133,15 +146,15 @@ export const getOrders = async (
 
         const orders = await Order.aggregate(aggregatePipeline)
         const totalOrders = await Order.countDocuments(filters)
-        const totalPages = Math.ceil(totalOrders / Number(limit))
+        const totalPages = Math.ceil(totalOrders / Number(acceptableLimit))
 
         res.status(200).json({
             orders,
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage: Number(page),
-                pageSize: Number(limit),
+                currentPage: Number(acceptablePage),
+                pageSize: Number(acceptableLimit),
             },
         })
     } catch (error) {
@@ -157,9 +170,11 @@ export const getOrdersCurrentUser = async (
     try {
         const userId = res.locals.user._id
         const { search, page = 1, limit = 5 } = req.query
+        const acceptableLimit = Math.min(Number(limit), 10).toString()
+        const acceptablePage = Math.max(Number(page), 1)
         const options = {
-            skip: (Number(page) - 1) * Number(limit),
-            limit: Number(limit),
+            skip: (Number(acceptablePage) - 1) * Number(acceptableLimit),
+            limit: Number(acceptableLimit),
         }
 
         const user = await User.findById(userId)
@@ -205,7 +220,7 @@ export const getOrdersCurrentUser = async (
         }
 
         const totalOrders = orders.length
-        const totalPages = Math.ceil(totalOrders / Number(limit))
+        const totalPages = Math.ceil(totalOrders / Number(acceptableLimit))
 
         orders = orders.slice(options.skip, options.skip + options.limit)
 
@@ -214,8 +229,8 @@ export const getOrdersCurrentUser = async (
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage: Number(page),
-                pageSize: Number(limit),
+                currentPage: Number(acceptablePage),
+                pageSize: Number(acceptableLimit),
             },
         })
     } catch (error) {
@@ -293,7 +308,9 @@ export const createOrder = async (
         const userId = res.locals.user._id
         const { address, payment, phone, total, email, items, comment } =
             req.body
-
+        if (phone && !validator.isMobilePhone(phone)) {
+            throw new BadRequestError('Не правильно введенный номер телефона')
+        }
         items.forEach((id: Types.ObjectId) => {
             const product = products.find((p) => p._id.equals(id))
             if (!product) {
